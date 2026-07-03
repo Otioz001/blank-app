@@ -24,10 +24,19 @@ df = pd.read_csv(file)
 df["Time"] = pd.to_datetime(df["Time"], errors="coerce")
 df = df.dropna(subset=["Time"]).sort_values("Time").reset_index(drop=True)
 
-# Drop the initial "balance" row from stats (it's a deposit, not a trade)
-trades = df[df["Type"] != "balance"].copy()
+# Keep only closing rows ("out") — "in" rows always show Profit = 0
+# since the trade hasn't been realized yet. Counting them as trades
+# would double the row count and dilute win rate / histograms.
+trades = df[df["Direction"] == "out"].copy()
 
+trades["Commission"] = pd.to_numeric(trades.get("Commission", 0), errors="coerce").fillna(0)
+trades["Swap"] = pd.to_numeric(trades.get("Swap", 0), errors="coerce").fillna(0)
 trades["Profit"] = pd.to_numeric(trades["Profit"], errors="coerce").fillna(0)
+
+# Net profit = trading result + costs (commission and swap are usually
+# already negative in MT5 exports)
+trades["Profit"] = trades["Profit"] + trades["Commission"] + trades["Swap"]
+
 trades["Trade"] = range(len(trades))
 trades["Hour"] = trades["Time"].dt.hour
 trades["Weekday"] = trades["Time"].dt.day_name()
