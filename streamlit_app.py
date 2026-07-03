@@ -1,6 +1,199 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
 
-st.title("🎈 My new app")
-st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
+st.set_page_config(page_title="MT5 Trading Analytics", layout="wide")
+
+st.title("MT5 Trading Analytics Dashboard")
+
+# ---------------------------------------------------------------
+# Upload
+# ---------------------------------------------------------------
+file = st.file_uploader("Upload MT5 CSV export", type="csv")
+
+if not file:
+    st.info("Upload your MT5 trade history CSV to get started.")
+    st.stop()
+
+df = pd.read_csv(file)
+
+# ---------------------------------------------------------------
+# Cleaning / prep
+# ---------------------------------------------------------------
+df["Time"] = pd.to_datetime(df["Time"], errors="coerce")
+df = df.dropna(subset=["Time"]).sort_values("Time").reset_index(drop=True)
+
+# Drop the initial "balance" row from stats (it's a deposit, not a trade)
+trades = df[df["Type"] != "balance"].copy()
+
+trades["Profit"] = pd.to_numeric(trades["Profit"], errors="coerce").fillna(0)
+trades["Trade"] = range(len(trades))
+trades["Hour"] = trades["Time"].dt.hour
+trades["Weekday"] = trades["Time"].dt.day_name()
+trades["Cumulative"] = trades["Profit"].cumsum()
+trades["Rolling100"] = trades["Profit"].rolling(100, min_periods=1).sum()
+
+# Drawdown on the Balance series (from the raw df, since balance updates there)
+df["Balance"] = pd.to_numeric(df["Balance"], errors="coerce")
+df["RunningMax"] = df["Balance"].cummax()
+df["Drawdown"] = df["Balance"] - df["RunningMax"]
+
+# ---------------------------------------------------------------
+# Sidebar filters
+# ---------------------------------------------------------------
+st.sidebar.header("Filters")
+
+only_losses = st.sidebar.checkbox("Losing trades only")
+only_wins = st.sidebar.checkbox("Winning trades only")
+
+symbols = sorted(trades["Symbol"].dropna().unique().tolist())
+symbol_filter = st.sidebar.multiselect("Symbol", symbols, default=symbols)
+
+directions = sorted(trades["Type"].dropna().unique().tolist())
+direction_filter = st.sidebar.multiselect("Buy / Sell", directions, default=directions)
+
+min_date = trades["Time"].min().date()
+max_date = trades["Time"].max().date()
+date_range = st.sidebar.date_input("Date range", [min_date, max_date])
+
+loss_threshold = st.sidebar.number_input(
+    "Only show trades worse than (e.g. -20)", value=0.0, step=1.0
+)
+
+filtered = trades.copy()
+
+if only_losses:
+    filtered = filtered[filtered["Profit"] < 0]
+if only_wins:
+    filtered = filtered[filtered["Profit"] > 0]
+if symbol_filter:
+    filtered = filtered[filtered["Symbol"].isin(symbol_filter)]
+if direction_filter:
+    filtered = filtered[filtered["Type"].isin(direction_filter)]
+if len(date_range) == 2:
+    start, end = date_range
+    filtered = filtered[
+        (filtered["Time"].dt.date >= start) & (filtered["Time"].dt.date <= end)
+    ]
+if loss_threshold < 0:
+    filtered = filtered[filtered["Profit"] <= loss_threshold]
+
+# ---------------------------------------------------------------
+# Top stats
+# ---------------------------------------------------------------
+st.subheader("Summary")
+
+net_profit = trades["Profit"].sum()
+wins = trades[trades["Profit"] > 0]
+losses = trades[trades["Profit"] < 0]
+win_rate = len(wins) / len(trades) * 100 if len(trades) else 0
+gross_win = wins["Profit"].sum()
+gross_loss = abs(losses["Profit"].sum())
+profit_factor = gross_win / gross_loss if gross_loss > 0 else np.nan
+largest_loss = trades["Profit"].min()
+max_drawdown = df["Drawdown"].min()
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Net Profit", f"{net_profit:,.2f}")
+c2.metric("Win Rate", f"{win_rate:.1f}%")
+c3.metric("Profit Factor", f"{profit_factor:.2f}" if not np.isnan(profit_factor) else "n/a")
+c4.metric("Largest Loss", f"{largest_loss:,.2f}")
+c5.metric("Max Drawdown", f"{max_drawdown:,.2f}")
+
+# ---------------------------------------------------------------
+# Equity curve
+# ---------------------------------------------------------------
+st.subheader("Equity Curve")
+fig = px.line(df, x="Time", y="Balance", title="Balance Over Time")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Drawdown
+# ---------------------------------------------------------------
+st.subheader("Drawdown")
+fig = px.area(df, x="Time", y="Drawdown", title="Drawdown Over Time")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Cumulative profit (pure trading performance, ignores deposits)
+# ---------------------------------------------------------------
+st.subheader("Cumulative Profit")
+fig = px.line(trades, x="Trade", y="Cumulative", title="Cumulative Trading Profit")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Rolling 100-trade profit
+# ---------------------------------------------------------------
+st.subheader("Rolling Profit (100 Trades)")
+fig = px.line(
+    trades, x="Trade", y="Rolling100",
+    title="Rolling 100-Trade Profit — a downward trend means the edge is fading"
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Scatter: profit per trade (main "which trades to avoid" chart)
+# ---------------------------------------------------------------
+st.subheader("Profit per Trade (filtered)")
+fig = px.scatter(
+    filtered, x="Trade", y="Profit",
+    color="Type", size=filtered["Volume"].abs() if "Volume" in filtered else None,
+    hover_data=["Time", "Symbol", "Type", "Price"],
+    title="Every dot is a trade — points below zero are losses"
+)
+fig.add_hline(y=0, line_dash="dash", line_color="gray")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Profit distribution
+# ---------------------------------------------------------------
+st.subheader("Profit Distribution")
+fig = px.histogram(filtered, x="Profit", nbins=80, title="Distribution of Trade Profit")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Biggest losers table
+# ---------------------------------------------------------------
+st.subheader("Biggest Losing Trades")
+losers = trades.sort_values("Profit").head(30)
+st.dataframe(
+    losers[["Trade", "Time", "Symbol", "Type", "Volume", "Price", "Profit", "Hour", "Weekday"]],
+    use_container_width=True,
+)
+
+# ---------------------------------------------------------------
+# Profit by hour
+# ---------------------------------------------------------------
+st.subheader("Profit by Hour")
+hourly = trades.groupby("Hour")["Profit"].sum().reset_index()
+fig = px.bar(hourly, x="Hour", y="Profit", title="Total Profit by Hour of Day")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Profit by weekday
+# ---------------------------------------------------------------
+st.subheader("Profit by Weekday")
+weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+weekday = trades.groupby("Weekday")["Profit"].sum().reindex(weekday_order).dropna().reset_index()
+fig = px.bar(weekday, x="Weekday", y="Profit", title="Total Profit by Weekday")
+st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Heatmap: weekday vs hour
+# ---------------------------------------------------------------
+st.subheader("Heatmap: Weekday vs Hour")
+heat = trades.pivot_table(
+    index="Weekday", columns="Hour", values="Profit", aggfunc="sum", fill_value=0
+).reindex(weekday_order).dropna(how="all")
+fig = px.imshow(
+    heat, color_continuous_scale="RdYlGn", aspect="auto",
+    title="Total Profit — Weekday vs Hour (red = avoid)"
+)
+st.plotly_chart(fig, use_container_width=True)
+
+st.caption(
+    "Tip: use the sidebar filters to isolate losing trades, a single symbol, "
+    "or a date range, then cross-reference against the hour/weekday heatmap "
+    "to find conditions worth excluding from the EA."
 )
