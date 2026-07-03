@@ -201,6 +201,35 @@ fig = px.imshow(
 )
 st.plotly_chart(fig, use_container_width=True)
 
+st.subheader("Combined View: Price, Commission, Profit")
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
+combo = make_subplots(
+    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+    subplot_titles=("Price at Close", "Commission", "Profit (net)")
+)
+
+combo.add_trace(
+    go.Scatter(x=trades["Trade"], y=trades["Price"], mode="lines", name="Price"),
+    row=1, col=1
+)
+
+combo.add_trace(
+    go.Bar(x=trades["Trade"], y=trades["Commission"], name="Commission"),
+    row=2, col=1
+)
+
+profit_colors = ["green" if p >= 0 else "red" for p in trades["Profit"]]
+combo.add_trace(
+    go.Bar(x=trades["Trade"], y=trades["Profit"], marker_color=profit_colors, name="Profit"),
+    row=3, col=1
+)
+
+combo.update_layout(height=750, showlegend=False)
+combo.update_xaxes(title_text="Trade Number", row=3, col=1)
+st.plotly_chart(combo, use_container_width=True)
+
 st.caption(
     "Tip: use the sidebar filters to isolate losing trades, a single symbol, "
     "or a date range, then cross-reference against the hour/weekday heatmap "
