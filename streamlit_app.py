@@ -35,12 +35,17 @@ trades["Profit"] = pd.to_numeric(trades["Profit"], errors="coerce").fillna(0)
 
 # Net profit = trading result + costs (commission and swap are usually
 # already negative in MT5 exports)
-trades["Profit"] = trades["Profit"] + trades["Commission"] + trades["Swap"]
+trades["GrossProfit"] = trades["Profit"]
+trades["NetProfit"] = trades["Profit"] + trades["Commission"] + trades["Swap"]
+trades["Profit"] = trades["NetProfit"]  # use net profit everywhere below
 
 trades["Trade"] = range(len(trades))
 trades["Hour"] = trades["Time"].dt.hour
 trades["Weekday"] = trades["Time"].dt.day_name()
 trades["Cumulative"] = trades["Profit"].cumsum()
+trades["CumulativeGross"] = trades["GrossProfit"].cumsum()
+trades["TotalCost"] = trades["Commission"] + trades["Swap"]
+trades["CumulativeCost"] = trades["TotalCost"].cumsum()
 trades["Rolling100"] = trades["Profit"].rolling(100, min_periods=1).sum()
 
 # Drawdown on the Balance series (from the raw df, since balance updates there)
@@ -103,12 +108,60 @@ profit_factor = gross_win / gross_loss if gross_loss > 0 else np.nan
 largest_loss = trades["Profit"].min()
 max_drawdown = df["Drawdown"].min()
 
+total_commission = trades["Commission"].sum()
+total_swap = trades["Swap"].sum()
+total_cost = total_commission + total_swap
+gross_total = trades["GrossProfit"].sum()
+cost_pct_of_gross = (abs(total_cost) / abs(gross_total) * 100) if gross_total != 0 else np.nan
+
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Net Profit", f"{net_profit:,.2f}")
 c2.metric("Win Rate", f"{win_rate:.1f}%")
 c3.metric("Profit Factor", f"{profit_factor:.2f}" if not np.isnan(profit_factor) else "n/a")
 c4.metric("Largest Loss", f"{largest_loss:,.2f}")
 c5.metric("Max Drawdown", f"{max_drawdown:,.2f}")
+
+c6, c7, c8 = st.columns(3)
+c6.metric("Total Commission", f"{total_commission:,.2f}")
+c7.metric("Total Swap", f"{total_swap:,.2f}")
+c8.metric(
+    "Costs as % of Gross Profit",
+    f"{cost_pct_of_gross:.1f}%" if not np.isnan(cost_pct_of_gross) else "n/a"
+)
+
+# ---------------------------------------------------------------
+# Gross vs Net profit comparison
+# ---------------------------------------------------------------
+st.subheader("Gross vs Net Profit")
+gross_net_fig = go.Figure()
+gross_net_fig.add_trace(go.Scatter(
+    x=trades["Trade"], y=trades["CumulativeGross"],
+    mode="lines", name="Gross (before costs)"
+))
+gross_net_fig.add_trace(go.Scatter(
+    x=trades["Trade"], y=trades["Cumulative"],
+    mode="lines", name="Net (after costs)"
+))
+gross_net_fig.update_layout(
+    title="Cumulative Gross vs Net Profit — the gap between the lines is what costs are eating",
+    xaxis_title="Trade Number", yaxis_title="Cumulative Profit"
+)
+st.plotly_chart(gross_net_fig, use_container_width=True)
+
+# ---------------------------------------------------------------
+# Commission / swap drag over time
+# ---------------------------------------------------------------
+st.subheader("Commission & Swap Drag Over Time")
+cost_fig = go.Figure()
+cost_fig.add_trace(go.Scatter(
+    x=trades["Trade"], y=trades["CumulativeCost"],
+    mode="lines", fill="tozeroy", name="Cumulative Cost"
+))
+cost_fig.update_layout(
+    title="Cumulative Commission + Swap (running total cost of trading)",
+    xaxis_title="Trade Number", yaxis_title="Cumulative Cost"
+)
+st.plotly_chart(cost_fig, use_container_width=True)
 
 # ---------------------------------------------------------------
 # Equity curve
