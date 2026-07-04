@@ -31,19 +31,7 @@ df = df.dropna(subset=["Time"]).sort_values("Time").reset_index(drop=True)
 # would double the row count and dilute win rate / histograms.
 trades = df[df["Direction"] == "out"].copy()
 
-# Commission in this export is charged entirely on the "in" (entry) rows —
-# "out" rows always show Commission = 0. It scales linearly with volume
-# (confirmed: 0.01 lot -> -0.1 commission), so derive the per-lot rate
-# directly from the data rather than hardcoding it. This way the dashboard
-# self-calibrates if you ever load an export with a different rate.
-entry_costs = df[(df["Direction"] == "in") & (df["Commission"] != 0)]
-if len(entry_costs) > 0:
-    commission_rate = (entry_costs["Commission"] / entry_costs["Volume"]).median()
-else:
-    commission_rate = 0  # no entry commission found in this file
-
-trades["Volume"] = pd.to_numeric(trades.get("Volume", 0), errors="coerce").fillna(0)
-trades["Commission"] = commission_rate * trades["Volume"]
+trades["Commission"] = pd.to_numeric(trades.get("Commission", 0), errors="coerce").fillna(0)
 trades["Swap"] = pd.to_numeric(trades.get("Swap", 0), errors="coerce").fillna(0)
 trades["Profit"] = pd.to_numeric(trades["Profit"], errors="coerce").fillna(0)
 
@@ -68,27 +56,9 @@ df["RunningMax"] = df["Balance"].cummax()
 df["Drawdown"] = df["Balance"] - df["RunningMax"]
 
 # ---------------------------------------------------------------
-# Sanity check: per-trade commission total should be close to the exact
-# total pulled straight from the raw file (sum of all "in" row commissions).
-# If these diverge a lot, the per-lot rate assumption doesn't hold for this
-# file and the estimate below shouldn't be trusted.
-# ---------------------------------------------------------------
-exact_total_commission = df["Commission"].sum()
-estimated_total_commission = trades["Commission"].sum()
-commission_check_diff = abs(exact_total_commission - estimated_total_commission)
-
-# ---------------------------------------------------------------
 # Sidebar filters
 # ---------------------------------------------------------------
 st.sidebar.header("Filters")
-
-if commission_check_diff > 0.01:
-    st.sidebar.warning(
-        f"Estimated commission ({estimated_total_commission:,.2f}) differs from "
-        f"exact total in file ({exact_total_commission:,.2f}). The per-lot rate "
-        f"assumption may not hold for this export — treat per-trade cost figures "
-        f"as approximate."
-    )
 
 only_losses = st.sidebar.checkbox("Losing trades only")
 only_wins = st.sidebar.checkbox("Winning trades only")
@@ -260,19 +230,9 @@ st.dataframe(
 # Profit by hour
 # ---------------------------------------------------------------
 st.subheader("Profit by Hour")
-hourly = trades.groupby("Hour").agg(
-    Trades=("Profit", "count"),
-    TotalProfit=("Profit", "sum"),
-    AvgProfit=("Profit", "mean"),
-    WinRate=("Profit", lambda x: (x > 0).mean() * 100),
-).reset_index()
-fig = px.bar(
-    hourly, x="Hour", y="TotalProfit",
-    hover_data=["Trades", "AvgProfit", "WinRate"],
-    title="Total Profit by Hour of Day"
-)
+hourly = trades.groupby("Hour")["Profit"].sum().reset_index()
+fig = px.bar(hourly, x="Hour", y="Profit", title="Total Profit by Hour of Day")
 st.plotly_chart(fig, use_container_width=True)
-st.dataframe(hourly, use_container_width=True)
 
 # ---------------------------------------------------------------
 # Profit by weekday
@@ -297,6 +257,8 @@ fig = px.imshow(
 st.plotly_chart(fig, use_container_width=True)
 
 st.subheader("Combined View: Price, Commission, Profit")
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 combo = make_subplots(
     rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
